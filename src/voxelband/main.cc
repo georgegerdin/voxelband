@@ -26,7 +26,7 @@
 #include "camera.h"
 #include "voxel.hh"
 
-bgfx::VertexDecl PosColorVertex::ms_decl;
+bgfx::VertexDecl PosNormalTangentTexcoordVertex::ms_decl;
 namespace
 {
 	namespace fs = boost::filesystem;
@@ -111,6 +111,10 @@ namespace
 		return std::visit(draw_ui_, game_state);
 	}
 
+	bgfx::TextureHandle load_texture(fs::path path) {
+		return loadTexture(path.string().c_str());
+	}
+
 
 	class Voxelband : public entry::AppI
 	{
@@ -154,7 +158,7 @@ namespace
 			imguiCreate();
 
 			// Create vertex stream declaration.
-			PosColorVertex::init();
+			PosNormalTangentTexcoordVertex::init();
 
 			ddInit();
 
@@ -180,6 +184,22 @@ namespace
 				}
 
 			}
+
+			// Load diffuse texture.
+			m_textureColor = load_texture(data_path / "data/fieldstone-rgba.tga");
+
+			// Load normal texture.
+			m_textureNormal = load_texture(data_path / "data/fieldstone-n.tga");
+
+			// Create texture sampler uniforms.
+			s_texColor = bgfx::createUniform("s_texColor", bgfx::UniformType::Int1);
+			s_texNormal = bgfx::createUniform("s_texNormal", bgfx::UniformType::Int1);
+
+			m_numLights = 4;
+			u_lightPosRadius = bgfx::createUniform("u_lightPosRadius", bgfx::UniformType::Vec4, m_numLights);
+			u_lightRgbInnerR = bgfx::createUniform("u_lightRgbInnerR", bgfx::UniformType::Vec4, m_numLights);
+
+
 
 			auto chunk = VoxelChunk{};
 			chunk.set(0, 0, 0, VoxelType::V_DIRT);
@@ -217,6 +237,13 @@ namespace
 
 		virtual int shutdown() override
 		{
+			bgfx::destroy(m_textureColor);
+			bgfx::destroy(m_textureNormal);
+			bgfx::destroy(s_texColor);
+			bgfx::destroy(s_texNormal);
+			bgfx::destroy(u_lightPosRadius);
+			bgfx::destroy(u_lightRgbInnerR);
+
 			ddShutdown();
 
 			imguiDestroy();
@@ -258,6 +285,7 @@ namespace
 				last = now;
 				const double freq = double(bx::getHPFrequency());
 				const float deltaTime = float(frameTime / freq);
+				const float stime = (float)(now / freq);
 
 				// Update camera.
 				cameraUpdate(deltaTime, m_mouseState);
@@ -292,6 +320,29 @@ namespace
 				// if no other draw calls are submitted to view 0.
 				bgfx::touch(0);
 
+				float lightPosRadius[4][4];
+				for (uint32_t ii = 0; ii < m_numLights; ++ii)
+				{
+					lightPosRadius[ii][0] = bx::fsin((stime*(0.1f + ii*0.17f) + ii*bx::kPiHalf*1.37f))*3.0f;
+					lightPosRadius[ii][1] = bx::fcos((stime*(0.2f + ii*0.29f) + ii*bx::kPiHalf*1.49f))*3.0f;
+					lightPosRadius[ii][2] = -2.5f;
+					lightPosRadius[ii][3] = 3.0f;
+				}
+
+				bgfx::setUniform(u_lightPosRadius, lightPosRadius, m_numLights);
+
+				float lightRgbInnerR[4][4] =
+				{
+					{ 1.0f, 0.7f, 0.2f, 0.8f },
+					{ 0.7f, 0.2f, 1.0f, 0.8f },
+					{ 0.2f, 1.0f, 0.7f, 0.8f },
+					{ 1.0f, 0.4f, 0.2f, 0.8f },
+				};
+
+				bgfx::setUniform(u_lightRgbInnerR, lightRgbInnerR, m_numLights);
+
+
+
 				float mtx[16];
 				bx::mtxIdentity(mtx);
 
@@ -304,9 +355,17 @@ namespace
 					bgfx::setVertexBuffer(0, chunk->get_vertex_buffer());
 					bgfx::setIndexBuffer(chunk->get_index_buffer());
 
+					// Bind textures.
+					bgfx::setTexture(0, s_texColor, m_textureColor);
+					bgfx::setTexture(1, s_texNormal, m_textureNormal);
+
 					// Set render states.
 					bgfx::setState(0
-						| BGFX_STATE_DEFAULT
+						| BGFX_STATE_RGB_WRITE
+						| BGFX_STATE_ALPHA_WRITE
+						| BGFX_STATE_DEPTH_WRITE
+						| BGFX_STATE_DEPTH_TEST_LESS
+						| BGFX_STATE_MSAA
 					);
 
 					// Submit primitive for rendering to view 0.
@@ -355,6 +414,13 @@ namespace
 		uint32_t m_height;
 		uint32_t m_debug;
 		uint32_t m_reset;
+		bgfx::UniformHandle s_texColor;
+		bgfx::UniformHandle s_texNormal;
+		bgfx::UniformHandle u_lightPosRadius;
+		bgfx::UniformHandle u_lightRgbInnerR;
+		uint16_t m_numLights;
+
+		bgfx::TextureHandle m_textureColor, m_textureNormal;
 
 		using VoxelLine = std::map<int, VoxelChunk>;
 		VoxelLine hello;

@@ -1,20 +1,9 @@
 #include <iostream>
+#include <variant>
 
 #include "bgfx/bgfx.h"
 #include "bgfx_utils.h"
 #include "voxel.hh"
-
-static PosColorVertex s_cubeVertices[] =
-{
-	{ -1.0f,  1.0f,  1.0f, 0xff000000 },
-	{ 1.0f,  1.0f,  1.0f, 0xff0000ff },
-	{ -1.0f, -1.0f,  1.0f, 0xff00ff00 },
-	{ 1.0f, -1.0f,  1.0f, 0xff00ffff },
-	{ -1.0f,  1.0f, -1.0f, 0xffff0000 },
-	{ 1.0f,  1.0f, -1.0f, 0xffff00ff },
-	{ -1.0f, -1.0f, -1.0f, 0xffffff00 },
-	{ 1.0f, -1.0f, -1.0f, 0xffffffff },
-};
 
 static const uint16_t s_cubeTriList[] =
 {
@@ -51,14 +40,8 @@ static const uint16_t s_cubeTriStrip[] =
 
 VoxelChunk::VoxelChunk()
 {
-	// Create static vertex buffer.
-/*	
-
-	// Create static index buffer.
-	
-*/
 	// Create program from shaders
-	m_program = loadProgram("vs_cubes", "fs_cubes");
+	m_program = loadProgram("vs_bump", "fs_bump");
 }
 
 
@@ -89,12 +72,36 @@ bool solid_block(VoxelType* block_type) {
 	return solid_block(*block_type);
 }
 
-PosColorVertex make_vertex(unsigned int x, unsigned int y, unsigned int z, uint32_t color) {
-	return PosColorVertex{ float(x), float(y), float(z), color };
+struct Normal { float x, y, z; Normal(float ix, float iy, float iz) : x(ix), y(iy), z(iz) { } };
+struct FrontNormal : Normal {	FrontNormal()	: Normal(0.0f,	0.0f,	-1.0f)	{} };
+struct BackNormal : Normal {	BackNormal()	: Normal(0.0f,	0.0f,	 1.0f)	{} };
+struct LeftNormal : Normal {	LeftNormal()	: Normal(-1.0f, 0.0f,	 0.0f)  {} };
+struct RightNormal : Normal {	RightNormal()	: Normal(1.0f,	0.0f,	 0.0f)	{} };
+struct UpNormal : Normal {		UpNormal()		: Normal(0.0f,	1.0f,	 0.0f)  {} };
+struct DownNormal : Normal {	DownNormal()	: Normal(0.0f, -1.0f,	 0.0f)  {} };
+
+using NormalDirection = std::variant<
+	FrontNormal,
+	BackNormal,
+	LeftNormal,
+	RightNormal,
+	UpNormal,
+	DownNormal
+>;
+
+uint32_t get_normal(NormalDirection direction) {
+	return std::visit([](Normal const& n) {return encodeNormalRgba8(n.x, n.y, n.z); }, direction);
 }
 
-auto add_vertex = [](auto &t, unsigned int x, unsigned int y, unsigned int z, uint32_t color) {
-	t.emplace_back(make_vertex( x, y, z, color));
+PosNormalTangentTexcoordVertex make_vertex(
+	unsigned int x, unsigned int y, unsigned int z, 
+	NormalDirection normal,
+	int16_t u, int16_t v) {
+	return PosNormalTangentTexcoordVertex{ float(x), float(y), float(z), get_normal(normal), 0, u, v };
+}
+
+auto add_vertex = [](auto &t, unsigned int x, unsigned int y, unsigned int z, NormalDirection normal, int16_t u, int16_t v) {
+	t.emplace_back(make_vertex( x, y, z, normal, u, v));
 };
 
 auto add_triangle = [] (auto& t, size_t base, unsigned int v1, unsigned int v2, unsigned int v3) {
@@ -104,60 +111,64 @@ auto add_triangle = [] (auto& t, size_t base, unsigned int v1, unsigned int v2, 
 };
 
 auto add_left_face = [](auto& vertices, auto& indices, auto& index_base, auto x, auto y, auto z) {
-	add_vertex(vertices, x,		y + 1,	z + 1,	0xff000000);
-	add_vertex(vertices, x,		y + 1,	z,		0xffff0000);
-	add_vertex(vertices, x,		y,		z + 1,	0xff00ff00);
-	add_vertex(vertices, x,		y,		z,		0xff000000);
+	add_vertex(vertices, x,		y + 1,	z + 1,	LeftNormal{},	0x7fff,		 0);
+	add_vertex(vertices, x,		y + 1,	z,		LeftNormal{},	0x7fff,	0x7fff);
+	add_vertex(vertices, x,		y,		z + 1,	LeftNormal{},	     0,		 0);
+	add_vertex(vertices, x,		y,		z,		LeftNormal{},		 0,	0x7fff);
 	add_triangle(indices, index_base, 0, 2, 1);
 	add_triangle(indices, index_base, 1, 2, 3);
 	index_base += 4;
 };
 
 auto add_right_face = [](auto& vertices, auto& indices, auto& index_base, auto x, auto y, auto z) {
-	add_vertex(vertices, x + 1, y + 1,	z + 1,	0xff0000ff);
-	add_vertex(vertices, x + 1, y + 1,	z,		0xffff00ff);
-	add_vertex(vertices, x + 1, y,		z + 1,	0xff00ffff);
-	add_vertex(vertices, x + 1, y,		z,		0xffffffff);
+	add_vertex(vertices, x + 1, y + 1,	z + 1,	RightNormal{},	0x7fff,	     0);
+	add_vertex(vertices, x + 1, y + 1,	z,		RightNormal{},	0x7fff,	0x7fff);
+	add_vertex(vertices, x + 1, y,		z + 1,	RightNormal{},	     0,	     0);
+	add_vertex(vertices, x + 1, y,		z,		RightNormal{},	     0,	0x7fff);
 	add_triangle(indices, index_base, 0, 1, 2);
 	add_triangle(indices, index_base, 1, 3, 2);
 	index_base += 4;
 };
 
 auto add_bottom_face = [](auto& vertices, auto& indices, auto& index_base, auto x, auto y, auto z) {
-	add_vertex(vertices, x,		y,		z + 1,	0xff00ff00);
-	add_vertex(vertices, x + 1, y,		z + 1,	0xff00ffff);
-	add_vertex(vertices, x,		y,		z,		0xffffff00);
-	add_vertex(vertices, x + 1, y,		z,		0xffffffff);
+	auto n = indices.size();
+	add_vertex(vertices, x,		y,		z + 1,	DownNormal{},	     0,	     0);
+	add_vertex(vertices, x + 1, y,		z + 1,	DownNormal{},	0x7fff,	     0);
+	add_vertex(vertices, x,		y,		z,		DownNormal{},	     0,	0x7fff);
+	add_vertex(vertices, x + 1, y,		z,		DownNormal{},	0x7fff,	0x7fff);
 	add_triangle(indices, index_base, 0, 1, 2);
 	add_triangle(indices, index_base, 2, 1, 3);
 	index_base += 4;
 };
 
 auto add_front_face = [](auto& vertices, auto& indices, auto& index_base, auto x, auto y, auto z) {
-	add_vertex(vertices, x,		y + 1,	z,		0xffff0000);
-	add_vertex(vertices, x,		y,		z,		0xffffff00);
-	add_vertex(vertices, x + 1, y + 1,	z,		0xffff00ff);
-	add_vertex(vertices, x + 1, y,		z,		0xffffffff);
+	auto n = indices.size();
+	add_vertex(vertices,     x,	1 + y,	z,	FrontNormal{},	     0,	     0);
+	add_vertex(vertices,     x,	    y,	z,	FrontNormal{},	     0,	0x7fff);
+	add_vertex(vertices, 1 + x, 1 + y,	z,	FrontNormal{},	0x7fff,		 0);
+	add_vertex(vertices, 1 + x,     y,	z,	FrontNormal{},	0x7fff,	0x7fff);
 	add_triangle(indices, index_base, 0, 1, 2);
 	add_triangle(indices, index_base, 2, 1, 3);
 	index_base += 4;
 };
 
 auto add_back_face = [](auto& vertices, auto& indices, auto& index_base, auto x, auto y, auto z) {
-	add_vertex(vertices, x,		y + 1,	z + 1,	0xff000000);
-	add_vertex(vertices, x + 1, y + 1,	z + 1,	0xff0000ff);
-	add_vertex(vertices, x,		y,		z + 1,	0xff00ff00);
-	add_vertex(vertices, x + 1, y,		z + 1,	0xff00ffff);
+	auto n = indices.size();
+	add_vertex(vertices,     x,	y + 1,	z + 1,	BackNormal{},	     0,	     0);
+	add_vertex(vertices, x + 1, y + 1,	z + 1,	BackNormal{},	0x7fff,	     0);
+	add_vertex(vertices,     x,	    y,	z + 1,	BackNormal{},	     0,	0x7fff);
+	add_vertex(vertices, x + 1,     y,	z + 1,	BackNormal{},	0x7fff,	0x7fff);
 	add_triangle(indices, index_base, 0, 1, 2);
 	add_triangle(indices, index_base, 3, 2, 1);
 	index_base += 4;
 };
 
 auto add_top_face = [](auto& vertices, auto& indices, auto& index_base, auto x, auto y, auto z) {
-	add_vertex(vertices, x,		y + 1,	z,		0xffff0000);
-	add_vertex(vertices, x + 1, y + 1,	z,		0xffff00ff);
-	add_vertex(vertices, x + 1, y + 1,	z + 1,	0xff0000ff);
-	add_vertex(vertices, x,		y + 1,	z + 1,	0xff000000);
+	auto n = indices.size();
+	add_vertex(vertices, x,		y + 1,	z,		UpNormal{},	     0,	0x7fff);
+	add_vertex(vertices, x + 1, y + 1,	z,		UpNormal{},	0x7fff,	0x7fff);
+	add_vertex(vertices, x + 1, y + 1,	z + 1,	UpNormal{},	0x7fff,	     0);
+	add_vertex(vertices, x,		y + 1,	z + 1,	UpNormal{},	     0,	     0);
 	add_triangle(indices, index_base, 0, 1, 2);
 	add_triangle(indices, index_base, 3, 0, 2);
 	index_base += 4;
@@ -255,6 +266,13 @@ void VoxelChunk::update_buffers(
 		}
 	}
 
+	calcTangents(&m_vertices[0]
+		, m_vertices.size()
+		, PosNormalTangentTexcoordVertex::ms_decl
+		, &m_indices[0]
+		, m_indices.size()
+	);
+
 	update_vertex_buffer();
 	update_index_buffer();
 }
@@ -265,13 +283,13 @@ void VoxelChunk::update_vertex_buffer() {
 		bgfx::updateDynamicVertexBuffer(
 			m_vbh,
 			0,
-			bgfx::makeRef(m_vertices.data(), m_vertices.size() * sizeof(PosColorVertex))
+			bgfx::makeRef(m_vertices.data(), m_vertices.size() * sizeof(PosNormalTangentTexcoordVertex))
 		);
 	}
 	else {
 		m_vbh = bgfx::createDynamicVertexBuffer(
-			bgfx::makeRef(m_vertices.data(), m_vertices.size()*sizeof(PosColorVertex))
-			, PosColorVertex::ms_decl
+			bgfx::makeRef(m_vertices.data(), m_vertices.size()*sizeof(PosNormalTangentTexcoordVertex))
+			, PosNormalTangentTexcoordVertex::ms_decl
 			, BGFX_BUFFER_ALLOW_RESIZE
 		);
 	}

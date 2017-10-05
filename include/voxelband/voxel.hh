@@ -13,21 +13,26 @@ const int VOXEL_SLICE_SIZE = VOXEL_CHUNK_WIDTH * VOXEL_CHUNK_HEIGHT;
 
 const int NUM_VOXELS = VOXEL_CHUNK_WIDTH*VOXEL_CHUNK_HEIGHT*VOXEL_CHUNK_DEPTH;
 
-struct PosColorVertex
+struct PosNormalTangentTexcoordVertex
 {
 	float m_x;
 	float m_y;
 	float m_z;
-	uint32_t m_abgr;
+	uint32_t m_normal;
+	uint32_t m_tangent;
+	int16_t m_u;
+	int16_t m_v;
 
 	static void init()
 	{
 		ms_decl
 			.begin()
 			.add(bgfx::Attrib::Position, 3, bgfx::AttribType::Float)
-			.add(bgfx::Attrib::Color0, 4, bgfx::AttribType::Uint8, true)
+			.add(bgfx::Attrib::Normal, 4, bgfx::AttribType::Uint8, true, true)
+			.add(bgfx::Attrib::Tangent, 4, bgfx::AttribType::Uint8, true, true)
+			.add(bgfx::Attrib::TexCoord0, 2, bgfx::AttribType::Int16, true, true)
 			.end();
-	};
+	}
 
 	static bgfx::VertexDecl ms_decl;
 };
@@ -47,7 +52,7 @@ protected:
 	bgfx::DynamicIndexBufferHandle m_ibh = BGFX_INVALID_HANDLE;
 	bgfx::ProgramHandle m_program = BGFX_INVALID_HANDLE;
 
-	std::vector<PosColorVertex> m_vertices;
+	std::vector<PosNormalTangentTexcoordVertex> m_vertices;
 	std::vector<uint16_t> m_indices;
 
 	void update_vertex_buffer();
