@@ -1,9 +1,12 @@
 #ifndef voxel_hh__
-#define voxel_h__
+#define voxel_hh__
 
 #include <cassert>
 #include <array>
 #include <vector>
+#include <map>
+
+#include "renderer.hh"
 
 const int VOXEL_CHUNK_WIDTH = 32;
 const int VOXEL_CHUNK_HEIGHT = 32;
@@ -41,22 +44,27 @@ struct PosNormalTangentTexcoordVertex
 enum class VoxelType : unsigned int {
 	V_EMPTY = 0,
 	V_DIRT,
+	V_ROCK,
 	V_GRASS
 };
 
 class VoxelChunk {
 protected:
 	std::array<VoxelType, NUM_VOXELS> m_voxel = {};
-
-	bgfx::DynamicVertexBufferHandle m_vbh = BGFX_INVALID_HANDLE;
-	bgfx::DynamicIndexBufferHandle m_ibh = BGFX_INVALID_HANDLE;
+	struct VoxelBuffer {
+		VoxelBuffer(const VoxelBuffer&) = delete;
+		VoxelBuffer(VoxelBuffer&&) = default;
+		DynamicVertexBuffer vertex_buffer;
+		DynamicIndexBuffer index_buffer;
+		std::vector<PosNormalTangentTexcoordVertex> vertices;
+		std::vector<uint16_t> indices;
+	};
+	using BufferContainer = std::map<VoxelType, VoxelBuffer>;
+	BufferContainer m_buffers;
 	bgfx::ProgramHandle m_program = BGFX_INVALID_HANDLE;
 
-	std::vector<PosNormalTangentTexcoordVertex> m_vertices;
-	std::vector<uint16_t> m_indices;
-
-	void update_vertex_buffer();
-	void update_index_buffer();
+	void update_vertex_buffer(VoxelBuffer&);
+	void update_index_buffer(VoxelBuffer&);
 
 public:
 	VoxelChunk();
@@ -70,14 +78,9 @@ public:
 	VoxelChunk& operator=(VoxelChunk&& other) {
 		if (this != &other) {
 			m_program = other.m_program;
-			m_ibh = other.m_ibh;
-			m_vbh = other.m_vbh;
 			std::copy(other.m_voxel.begin(), other.m_voxel.end(), m_voxel.begin());
-			m_vertices = std::move(other.m_vertices);
-			m_indices = std::move(other.m_indices);
+			m_buffers = std::move(other.m_buffers);
 			other.m_program = BGFX_INVALID_HANDLE;
-			other.m_ibh = BGFX_INVALID_HANDLE;
-			other.m_vbh = BGFX_INVALID_HANDLE;
 		}
 		return *this;
 	}
@@ -108,12 +111,27 @@ public:
 		VoxelChunk* back = nullptr
 	);
 
-	bgfx::DynamicVertexBufferHandle const& get_vertex_buffer() const {
-		return m_vbh;
+	BufferContainer const& get_buffers() const {
+		return m_buffers;
 	}
 
-	bgfx::DynamicIndexBufferHandle const& get_index_buffer() const {
-		return m_ibh;
+	template<typename Tfun>
+	VoxelBuffer& get_buffer_or(VoxelType type, Tfun fun) {
+		auto find_buffer = m_buffers.find(type);
+		if (find_buffer == m_buffers.end()) {
+			auto [buffer, b] = m_buffers.emplace(std::make_pair(type, fun()));
+			if (!b)
+				throw std::runtime_error("Unable to emplace voxel buffer");
+			return buffer->second;
+		}
+		return find_buffer->second;
+	}
+
+	VoxelBuffer const& get_buffer(VoxelType type) const {
+		auto find_buffer = m_buffers.find(type);
+		if (find_buffer == m_buffers.end()) 
+			throw std::runtime_error("Unable to find buffer");
+		return find_buffer->second;
 	}
 
 	bgfx::ProgramHandle const& get_program() const {
@@ -123,4 +141,4 @@ public:
 };
 
 
-#endif
+#endif // !voxel_hh__

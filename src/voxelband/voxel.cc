@@ -1,5 +1,6 @@
 #include <iostream>
 #include <variant>
+#include <boost/filesystem.hpp>
 
 #include "bgfx/bgfx.h"
 #include "bgfx_utils.h"
@@ -40,26 +41,10 @@ static const uint16_t s_cubeTriStrip[] =
 
 VoxelChunk::VoxelChunk()
 {
-	// Create program from shaders
-	m_program = loadProgram("vs_bump", "fs_bump");
 }
 
 
 VoxelChunk::~VoxelChunk() {
-	if (isValid(m_ibh)) {
-		bgfx::destroy(m_ibh);
-		m_ibh = BGFX_INVALID_HANDLE;
-	}
-
-	if (isValid(m_vbh)) {
-		bgfx::destroy(m_vbh);
-		m_vbh = BGFX_INVALID_HANDLE;
-	}
-
-	if (isValid(m_program)) {
-		bgfx::destroy(m_program);
-		m_program = BGFX_INVALID_HANDLE;
-	}
 }
 
 bool solid_block(VoxelType block_type) {
@@ -182,8 +167,10 @@ void VoxelChunk::update_buffers(
 	VoxelChunk* front,
 	VoxelChunk* back) {
 
-	m_vertices.clear();
-	m_indices.clear();
+	for (auto& buffer : m_buffers) {
+		buffer.second.vertices.clear();
+		buffer.second.indices.clear();
+	}
 
 	unsigned int x = 0, y = 0, z = 0;
 	
@@ -192,66 +179,70 @@ void VoxelChunk::update_buffers(
 		 current_voxel++) {
 
 		if ( solid_block(*current_voxel) ) {
-			auto index_base = m_vertices.size();
+			auto& voxel_buffer = get_buffer_or(*current_voxel, []() {return VoxelBuffer{}; });
+			auto& vertices = voxel_buffer.vertices;
+			auto& indices = voxel_buffer.indices;
+
+			auto index_base = vertices.size();
 			//left face
 			if (x == 0 ) {
 				if (left) {
 					if (!solid_block(left->get(VOXEL_CHUNK_WIDTH - 1, y, z)))
-						add_left_face(m_vertices, m_indices, index_base, x, y, z);
+						add_left_face(vertices, indices, index_base, x, y, z);
 				}
 			}
 			else if(!solid_block(current_voxel - 1)) {
-				add_left_face(m_vertices, m_indices, index_base, x, y, z);
+				add_left_face(vertices, indices, index_base, x, y, z);
 			}
 			//right face
 			if (x == VOXEL_CHUNK_WIDTH - 1) {
 				if (right) {
 					if (!solid_block(right->get(0, y, z)))
-						add_right_face(m_vertices, m_indices, index_base, x, y, z);
+						add_right_face(vertices, indices, index_base, x, y, z);
 				}
 			}
 			else if(!solid_block(current_voxel + 1)) {
-				add_right_face(m_vertices, m_indices, index_base, x, y, z);
+				add_right_face(vertices, indices, index_base, x, y, z);
 			}
 			//top face
 			if (y == VOXEL_CHUNK_HEIGHT - 1) {
 				if (above) {
 					if (!solid_block(above->get(x, 0, z)))
-						add_top_face(m_vertices, m_indices, index_base, x, y, z);
+						add_top_face(vertices, indices, index_base, x, y, z);
 				}
 			}
 			else if(!solid_block(current_voxel + VOXEL_CHUNK_WIDTH)) {
-				add_top_face(m_vertices, m_indices, index_base, x, y, z);
+				add_top_face(vertices, indices, index_base, x, y, z);
 			}
 			//bottom face
 			if (y == 0) {
 				if (below) {
 					if (!solid_block(below->get(x, VOXEL_CHUNK_HEIGHT - 1, z)))
-						add_bottom_face(m_vertices, m_indices, index_base, x, y, z);
+						add_bottom_face(vertices, indices, index_base, x, y, z);
 				}
 			}
 			else if(!solid_block(current_voxel - VOXEL_CHUNK_HEIGHT)) {
-				add_bottom_face(m_vertices, m_indices, index_base, x, y, z);
+				add_bottom_face(vertices, indices, index_base, x, y, z);
 			}
 			//front face
 			if (z == 0) {
 				if (front) {
 					if (!solid_block(front->get(x, y, VOXEL_CHUNK_DEPTH - 1)))
-						add_front_face(m_vertices, m_indices, index_base, x, y, z);
+						add_front_face(vertices, indices, index_base, x, y, z);
 				}
 			}
 			else if(!solid_block(current_voxel - VOXEL_SLICE_SIZE)) {
-				add_front_face(m_vertices, m_indices, index_base, x, y, z);
+				add_front_face(vertices, indices, index_base, x, y, z);
 			}
 			//back face
 			if (z == VOXEL_CHUNK_DEPTH - 1) {
 				if (back) {
 					if (!solid_block(back->get(x, y, 0)))
-						add_back_face(m_vertices, m_indices, index_base, x, y, z);
+						add_back_face(vertices, indices, index_base, x, y, z);
 				}
 			}
 			else if(!solid_block(current_voxel + VOXEL_SLICE_SIZE)) {	
-				add_back_face(m_vertices, m_indices, index_base, x, y, z);
+				add_back_face(vertices, indices, index_base, x, y, z);
 			}
 		}
 		
@@ -266,45 +257,53 @@ void VoxelChunk::update_buffers(
 		}
 	}
 
-	calcTangents(&m_vertices[0]
-		, m_vertices.size()
-		, PosNormalTangentTexcoordVertex::ms_decl
-		, &m_indices[0]
-		, m_indices.size()
-	);
+	for (auto& buffer : m_buffers) {
+		auto& vertices = buffer.second.vertices;
+		if (vertices.size() == 0)
+			continue;
+		auto& indices = buffer.second.indices;
+		calcTangents(&vertices[0]
+			, vertices.size()
+			, PosNormalTangentTexcoordVertex::ms_decl
+			, &indices[0]
+			, indices.size()
+		);
 
-	update_vertex_buffer();
-	update_index_buffer();
+		update_vertex_buffer(buffer.second);
+		update_index_buffer(buffer.second);
+	}
+
+	
 }
 
 
-void VoxelChunk::update_vertex_buffer() {
-	if (isValid(m_vbh)) {
-		bgfx::updateDynamicVertexBuffer(
-			m_vbh,
+void VoxelChunk::update_vertex_buffer(VoxelBuffer& vb) {
+	if (vb.vertex_buffer.is_valid()) {
+		vb.vertex_buffer.update(
 			0,
-			bgfx::makeRef(m_vertices.data(), m_vertices.size() * sizeof(PosNormalTangentTexcoordVertex))
+			bgfx::makeRef(vb.vertices.data()
+				, vb.vertices.size() * sizeof(PosNormalTangentTexcoordVertex))
 		);
 	}
 	else {
-		m_vbh = bgfx::createDynamicVertexBuffer(
-			bgfx::makeRef(m_vertices.data(), m_vertices.size()*sizeof(PosNormalTangentTexcoordVertex))
+		if (!vb.vertex_buffer.create(
+			bgfx::makeRef(vb.vertices.data(), vb.vertices.size() * sizeof(PosNormalTangentTexcoordVertex))
 			, PosNormalTangentTexcoordVertex::ms_decl
 			, BGFX_BUFFER_ALLOW_RESIZE
-		);
+		))
+			throw std::runtime_error("Unable to create vertex buffer.");
 	}
 }
 
-void VoxelChunk::update_index_buffer() {
-	if (isValid(m_ibh)) {
-		bgfx::updateDynamicIndexBuffer(m_ibh,
-			0,
-			bgfx::makeRef(m_indices.data(), m_indices.size() * sizeof(uint16_t))
+void VoxelChunk::update_index_buffer(VoxelBuffer& vb) {
+	if (vb.index_buffer.is_valid()) {
+		vb.index_buffer.update(0,
+			bgfx::makeRef(vb.indices.data(), vb.indices.size() * sizeof(uint16_t))
 		);
 	}
 	else {
-		m_ibh = bgfx::createDynamicIndexBuffer(
-			bgfx::makeRef(m_indices.data(), m_indices.size() * sizeof(uint16_t))
+		vb.index_buffer.create(
+			bgfx::makeRef(vb.indices.data(), vb.indices.size() * sizeof(uint16_t))
 			, BGFX_BUFFER_ALLOW_RESIZE
 		);
 	}
